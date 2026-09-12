@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<meta name="theme-color" content="#050507" />
+<title>Ferro Orb — Sound + Light Reactive</title>
+<style>
+  *{box-sizing:border-box}
+  html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#050507;font-family:Inter,system-ui,sans-serif;color:#fff}
+  canvas{display:block}
+  #ui{position:fixed;inset:0;pointer-events:none}
+  #status{position:absolute;left:50%;bottom:24px;transform:translateX(-50%);
+    padding:9px 14px;border:1px solid rgba(255,255,255,.12);border-radius:999px;
+    background:rgba(10,10,14,.62);backdrop-filter:blur(14px);font-size:12px;letter-spacing:.04em;
+    color:rgba(255,255,255,.78);white-space:nowrap}
+  #start{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    background:radial-gradient(circle at center,rgba(28,28,40,.7),rgba(3,3,6,.97));
+    pointer-events:auto}
+  .panel{width:min(460px,calc(100vw - 32px));padding:30px;border-radius:24px;
+    background:rgba(18,18,25,.76);border:1px solid rgba(255,255,255,.12);
+    box-shadow:0 30px 100px rgba(0,0,0,.5);backdrop-filter:blur(24px)}
+  h1{margin:0 0 10px;font-size:28px;font-weight:650}
+  p{margin:0 0 20px;color:rgba(255,255,255,.65);line-height:1.55;font-size:14px}
+  .permissions{display:grid;gap:9px;margin:0 0 20px}
+  .permission{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;
+    border-radius:14px;background:rgba(255,255,255,.045);font-size:13px}
+  .dot{width:8px;height:8px;border-radius:50%;background:#666}
+  .dot.ok{background:#73e6a4;box-shadow:0 0 12px #73e6a4}
+  .dot.warn{background:#ffd36a}
+  button{width:100%;border:0;border-radius:14px;padding:14px 18px;background:#fff;color:#09090b;
+    font-weight:650;font-size:14px;cursor:pointer}
+  button:disabled{opacity:.45;cursor:default}
+  #readout{position:absolute;top:18px;left:18px;font:11px ui-monospace,SFMono-Regular,monospace;
+    color:rgba(255,255,255,.5);line-height:1.55}
+  #lightVideo{position:fixed;right:12px;bottom:12px;width:1px;height:1px;opacity:0;pointer-events:none}
+</style>
+</head>
+<body>
+<div id="ui">
+  <div id="readout">MIC — waiting<br>LIGHT — waiting</div>
+  <div id="status">Permission setup required</div>
+  <div id="start">
+    <div class="panel">
+      <h1>Ferro Orb</h1>
+      <p>The orb reacts to the microphone spectrum and ambient light. Microphone and camera access are requested before the visualizer starts.</p>
+      <div class="permissions">
+        <div class="permission"><span>Microphone — frequency spectrum</span><span id="micDot" class="dot"></span></div>
+        <div class="permission"><span>Camera — ambient light estimate</span><span id="camDot" class="dot"></span></div>
+        <div class="permission"><span>Motion sensor — optional</span><span id="motionDot" class="dot"></span></div>
+      </div>
+      <button id="startBtn">Allow &amp; Enter</button>
+    </div>
+  </div>
+  <video id="lightVideo" autoplay playsinline muted></video>
+</div>
+
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js';
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x050507);
+scene.fog = new THREE.FogExp2(0x050507, 0.035);
+
+const camera = new THREE.PerspectiveCamera(48, innerWidth/innerHeight, .1, 100);
+camera.position.set(0, 0.35, 7.4);
+
+const renderer = new THREE.WebGLRenderer({antialias:true, powerPreference:'high-performance'});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.setSize(innerWidth,innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.15;
+document.body.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.enablePan = false;
+controls.minDistance = 4.5;
+controls.maxDistance = 11;
+
+const ambient = new THREE.HemisphereLight(0x8899ff,0x080808,0.24);
+scene.add(ambient);
+
+const point = new THREE.PointLight(0x9a65ff, 18, 16, 2);
+point.position.set(2.5,2.5,4);
+scene.add(point);
+
+const floor = new THREE.Mesh(
+  new THREE.CircleGeometry(8,96),
+  new THREE.MeshStandardMaterial({color:0x07070a,roughness:.82,metalness:.15})
+);
+floor.rotation.x=-Math.PI/2; floor.position.y=-2.25; scene.add(floor);
+
+// Dense, deformable sphere. Vertex displacement is driven by low/mid/high frequency bands,
+// while a directional light term changes the surface response with ambient light.
+const geo = new THREE.IcosahedronGeometry(1.72,7);
+const base = geo.attributes.position.array.slice();
+const mat = new THREE.MeshPhysicalMaterial({
+  color:0x09090c, metalness:.92, roughness:.2, clearcoat:.65, clearcoatRoughness:.12,
+  emissive:0x190b2e, emissiveIntensity:1.25
+});
+const orb = new THREE.Mesh(geo,mat);
+scene.add(orb);
+
+// Glowing shell for magnetic/ferrofluid-like edge energy.
+const shellMat = new THREE.MeshBasicMaterial({
+  color:0x9c50ff, transparent:true, opacity:.13, blending:THREE.AdditiveBlending,
+  side:THREE.BackSide, depthWrite:false
+});
+const shell = new THREE.Mesh(new THREE.IcosahedronGeometry(1.82,5),shellMat);
+scene.add(shell);
+
+// Magnetic spikes: elongated metaball-like probes distributed around the sphere.
+const spikeCount=180;
+const spikeGroup=new THREE.Group();
+scene.add(spikeGroup);
+const spikeGeo=new THREE.ConeGeometry(.035,1,6,1,true);
+const spikeMat=new THREE.MeshStandardMaterial({
+  color:0x21102e, emissive:0x5d20a4, emissiveIntensity:1.2,
+  metalness:.8, roughness:.28
+});
+for(let i=0;i<spikeCount;i++){
+  const p=new THREE.Vector3().randomDirection();
+  const s=new THREE.Mesh(spikeGeo,spikeMat);
+  s.position.copy(p).multiplyScalar(1.62);
+  s.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),p);
+  s.userData={dir:p.clone(),phase:Math.random()*Math.PI*2,seed:.55+Math.random()*1.4};
+  spikeGroup.add(s);
+}
+
+// Tiny orbiting particles reinforce the liquid-metal/magnetic feel.
+const particleN=1200, positions=new Float32Array(particleN*3);
+for(let i=0;i<particleN;i++){
+  const p=new THREE.Vector3().randomDirection().multiplyScalar(2.0+Math.random()*2.4);
+  positions[i*3]=p.x; positions[i*3+1]=p.y; positions[i*3+2]=p.z;
+}
+const pg=new THREE.BufferGeometry();
+pg.setAttribute('position',new THREE.BufferAttribute(positions,3));
+const pm=new THREE.PointsMaterial({size:.012,transparent:true,opacity:.42,color:0xb76cff,blending:THREE.AdditiveBlending});
+scene.add(new THREE.Points(pg,pm));
+
+let audioCtx, analyser, audioData;
+let cameraStream, lightCanvas, lightCtx;
+let micLevel=0, low=0, mid=0, high=0, lightLevel=.5, targetLight=.5;
+const clock=new THREE.Clock();
+
+function smooth(a,b,k){return a+(b-a)*k}
+
+async function setupMic(){
+  const stream=await navigator.mediaDevices.getUserMedia({audio:{
+    echoCancellation:false,noiseSuppression:false,autoGainControl:false
+  }});
+  audioCtx=new (window.AudioContext||window.webkitAudioContext)();
+  const src=audioCtx.createMediaStreamSource(stream);
+  analyser=audioCtx.createAnalyser();
+  analyser.fftSize=2048;
+  analyser.smoothingTimeConstant=.72;
+  src.connect(analyser);
+  audioData=new Uint8Array(analyser.frequencyBinCount);
+  document.querySelector('#micDot').className='dot ok';
+}
+
+async function setupCameraLight(){
+  cameraStream=await navigator.mediaDevices.getUserMedia({video:{
+    facingMode:{ideal:'environment'},width:{ideal:320},height:{ideal:240}
+  },audio:false});
+  const video=document.querySelector('#lightVideo');
+  video.srcObject=cameraStream;
+  await video.play();
+  lightCanvas=document.createElement('canvas');
+  lightCanvas.width=64; lightCanvas.height=48;
+  lightCtx=lightCanvas.getContext('2d',{willReadFrequently:true});
+  document.querySelector('#camDot').className='dot ok';
+}
+
+async function setupMotion(){
+  if(typeof DeviceMotionEvent==='undefined') return;
+  if(typeof DeviceMotionEvent.requestPermission==='function'){
+    const r=await DeviceMotionEvent.requestPermission();
+    if(r!=='granted') return;
+  }
+  document.querySelector('#motionDot').className='dot ok';
+}
+
+function sampleLight(){
+  if(!lightCtx || !document.querySelector('#lightVideo').videoWidth) return;
+  const v=document.querySelector('#lightVideo');
+  lightCtx.drawImage(v,0,0,64,48);
+  const d=lightCtx.getImageData(0,0,64,48).data;
+  let sum=0;
+  for(let i=0;i<d.length;i+=4) sum += .2126*d[i]+.7152*d[i+1]+.0722*d[i+2];
+  targetLight=(sum/(d.length/4))/255;
+  lightLevel=smooth(lightLevel,targetLight,.08);
+}
+
+function readAudio(){
+  if(!analyser) return;
+  analyser.getByteFrequencyData(audioData);
+  const n=audioData.length;
+  let a=0,b=0,c=0;
+  for(let i=1;i<Math.floor(n*.06);i++) a+=audioData[i];
+  for(let i=Math.floor(n*.06);i<Math.floor(n*.25);i++) b+=audioData[i];
+  for(let i=Math.floor(n*.25);i<Math.floor(n*.72);i++) c+=audioData[i];
+  low=smooth(low,(a/(n*.06))/255,.16);
+  mid=smooth(mid,(b/(n*.19))/255,.16);
+  high=smooth(high,(c/(n*.47))/255,.16);
+  micLevel=smooth(micLevel,(low*.52+mid*.33+high*.15),.14);
+}
+
+function updateOrb(t){
+  const pos=geo.attributes.position;
+  const bass=low, mids=mid, treble=high;
+  for(let i=0;i<pos.count;i++){
+    const x=base[i*3],y=base[i*3+1],z=base[i*3+2];
+    const len=Math.sqrt(x*x+y*y+z*z);
+    const nx=x/len,ny=y/len,nz=z/len;
+    const wave =
+      Math.sin(nx*7.2+t*1.7 + low*8.0)*.045 +
+      Math.sin(ny*13.0-t*2.1 + mid*11.0)*.026 +
+      Math.sin(nz*19.0+t*2.8 + high*16.0)*.018;
+    const directional = Math.max(0,nx*.5+ny*.3+nz*.2);
+    const deformation =
+      1 + bass*.30*Math.pow(Math.abs(nx*.72+ny*.21+nz*.41),5)
+        + mids*.15*(.5+.5*Math.sin(nx*10+ny*7+t*3))
+        + wave + lightLevel*.035*directional;
+    pos.setXYZ(i,x/len*1.72*deformation,y/len*1.72*deformation,z/len*1.72*deformation);
+  }
+  pos.needsUpdate=true;
+  geo.computeVertexNormals();
+
+  const energy=.2+low*1.8+mid*.65+high*.35;
+  mat.emissiveIntensity=smooth(mat.emissiveIntensity,.65+energy*1.05+lightLevel*.55,.08);
+  mat.roughness=.16+(.42*lightLevel);
+  shell.scale.setScalar(1+low*.12+mid*.045);
+  shellMat.opacity=.055+energy*.045;
+  point.intensity=10+energy*17+lightLevel*16;
+
+  spikeGroup.children.forEach((s,i)=>{
+    const d=s.userData;
+    const local=1.52 + low*(.7*d.seed) + mid*.25*Math.sin(t*4+d.phase);
+    s.position.copy(d.dir).multiplyScalar(local);
+    const length=.42 + low*1.8*Math.pow(.5+.5*Math.sin(t*5+d.phase),2) + high*.5;
+    s.scale.set(1, length, 1);
+    s.material.emissiveIntensity=1+energy*.8;
+  });
+}
+
+function updateReadout(){
+  document.querySelector('#readout').innerHTML=
+    `MIC ${Math.round(micLevel*100)}% · LOW ${Math.round(low*100)}% · MID ${Math.round(mid*100)}% · HIGH ${Math.round(high*100)}%<br>`+
+    `LIGHT ${Math.round(lightLevel*100)}%`;
+}
+
+async function start(){
+  const btn=document.querySelector('#startBtn'), status=document.querySelector('#status');
+  btn.disabled=true; status.textContent='Requesting microphone permission…';
+  try{await setupMic()}catch(e){status.textContent='Microphone permission was not granted.';btn.disabled=false;return}
+  status.textContent='Requesting camera permission for light sensing…';
+  try{await setupCameraLight()}catch(e){status.textContent='Camera permission was not granted. Continuing with sound only.'}
+  status.textContent='Requesting optional motion permission…';
+  try{await setupMotion()}catch(e){}
+  document.querySelector('#start').style.display='none';
+  status.textContent='Ferro Orb active · move, play sound, change the light';
+  if(audioCtx.state==='suspended') await audioCtx.resume();
+}
+
+document.querySelector('#startBtn').addEventListener('click',start);
+
+function animate(){
+  requestAnimationFrame(animate);
+  const t=clock.getElapsedTime();
+  readAudio();
+  if(Math.floor(t*10)%2===0) sampleLight();
+  updateOrb(t);
+  orb.rotation.y += .0015+high*.008;
+  orb.rotation.x = Math.sin(t*.25)*.035;
+  spikeGroup.rotation.y -= .0007;
+  spikeGroup.rotation.z = Math.sin(t*.17)*.002;
+  controls.update();
+  updateReadout();
+  renderer.render(scene,camera);
+}
+animate();
+
+addEventListener('resize',()=>{
+  camera.aspect=innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight);
+});
+</script>
+</body>
+</html>
